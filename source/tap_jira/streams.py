@@ -1891,6 +1891,38 @@ class IssueStream(JiraStream[str]):
         return params
 
     @override
+    def get_records(self, context: Context | None) -> Iterable[Record]:
+        """Return issue records, de-duplicated by immutable issue id.
+
+        An issue that is moved to another project keeps its immutable ``id``
+        (and its comments/changelog history), while its ``key`` and project
+        change. Jira's search can surface the same issue id twice in a single
+        sync — e.g. once under the old project and once under the new one when
+        the move happens while a paginated sync is in flight. Emitting both
+        would publish two active records for the same issue downstream, so
+        only the most recently updated version of each issue id is emitted.
+        Keeping the newest version also ensures the emitted record reflects
+        the latest project ownership.
+        """
+        latest_by_id: dict[str, Record] = {}
+
+        for record in super().get_records(context):
+            issue_id: str = record["id"]
+            existing = latest_by_id.get(issue_id)
+            if (
+                existing is None
+                or record["fields"]["updated"] >= existing["fields"]["updated"]
+            ):
+                latest_by_id[issue_id] = record
+
+        # Preserve the stream's ascending `updated` sort order so incremental
+        # state advances correctly.
+        yield from sorted(
+            latest_by_id.values(),
+            key=lambda record: record["fields"]["updated"],
+        )
+
+    @override
     def post_process(self, row: Record, context: Context | None = None) -> Record:
         """Post-process the record.
 
@@ -3319,7 +3351,7 @@ class IssueWatchersStream(JiraStartAtPaginatedStream):
     path = "/issue/{issue_id}/watchers"
     parent_stream_type = IssueStream
     state_partitioning_keys = ()
-    primary_keys = ("accountId",)
+    primary_keys = ("issueId", "accountId")
     records_jsonpath = "$[watchers][*]"
     instance_name = ""
 
@@ -3522,6 +3554,13 @@ class IssueWorklogs(JiraStartAtPaginatedStream):
         Property("timeSpentSeconds", IntegerType),
         Property("issueId", StringType),
     ).to_dict()
+
+    @override
+    def post_process(self, row: Record, context: Context | None = None) -> Record:
+        """Post-process the record before it is returned."""
+        assert context is not None  # noqa: S101
+        row["issueId"] = context["issue_id"]
+        return row
 
 
 class ComponentStream(JiraStartAtPaginatedStream):

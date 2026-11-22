@@ -179,6 +179,24 @@ You can easily run `tap-jira` by itself or in a pipeline using [Meltano](https:/
 
 This project uses parent-child streams. Learn more about them [here](https://gitlab.com/meltano/sdk/-/blob/main/docs/parent_streams.md).
 
+### Issues moved between projects
+
+When an issue is moved to another project, Jira keeps its immutable issue `id`
+(and its comment/changelog history) while its `key` and project change. This tap
+handles that as follows:
+
+* The `issues` stream is keyed by the immutable issue `id`, so a moved issue
+  updates the existing record downstream instead of creating a second active
+  one. If a sync observes the same issue id twice in one run — e.g. once under
+  the old project and once under the new one when the move happens mid-sync —
+  only the most recently updated version is emitted, so the project change is
+  what gets recorded.
+* Child streams (`issue_comments`, `issue_changelog`, `issue_watchers`,
+  `issue_worklogs`) fetch and stamp records with the immutable issue `id`, so
+  history created before the move stays connected to the same issue.
+* The project move itself is recorded in the `issue_changelog` stream as a
+  `project` field change.
+
 ### Executing the Tap Directly
 
 ```bash
